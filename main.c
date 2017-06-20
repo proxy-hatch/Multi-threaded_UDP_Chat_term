@@ -11,7 +11,13 @@
 // http://beej.us/guide/bgnet/examples/listener.c
 
 // this program ALWAYS define the sender as client and the receiver as server
-#include <stdio.h>
+// addrinfo & AI_PASSIVE was not able to be recognized despite '#include <netdb.h>' when compiling with '-std=CXX' flag
+// Adding this is one liner was the solution as explained here: https://stackoverflow.com/a/37545256
+#define _POSIX_C_SOURCE 200112L
+
+#define DEBUG
+
+#include <stdio.h>F
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
@@ -27,6 +33,9 @@
 #include <semaphore.h>
 #include <errno.h>  //pthread API does NOT set the global variable errno, but instead #defines it thread-local, this is just a fail-safe
 #include <signal.h>     //catch SIGINT
+#include <sys/types.h>
+
+
 
 #include "LIST.h"
 
@@ -37,8 +46,10 @@
 // contains the type of job, and data (send/received msg)
 // used in list->node->data
 typedef enum {
-    SEND = 0,
-    PRINT
+    SEND = 0,       // sending job created by recordKBInput()
+    PRINTWROTE,     // printing job created by recordKBInput()
+    PRINTRCVED,     // printing job created by rcvUDPDatagram()
+    PRINT   // PRINT={PRINTWROTE,PRINTRCVED}, used to retrieve printing jobs, disregarding which type of printing job
 } jobType;
 typedef struct jobPckg {
     jobType type;
@@ -95,7 +106,7 @@ int strtoi(const char *str) {
 
 // check if stdin is empty
 // return 1 if not empty, return 0 if empty
-int stdinIsNotEmpty(){
+int stdinIsNotEmpty() {
     struct pollfd fds;
     fds.fd = 0;       // 0 for stdin
     fds.events = POLLIN;
@@ -123,22 +134,23 @@ int getstdinStr(char *arr, int size) {
         return -1;
 }
 
-// get sockaddr of sender in received UDP msgs, converting to IPv4
-void *get_in_addr(struct sockaddr *sa) {
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in *) sa)->sin_addr);
-    } else {
-        perror("get_in_addr() detected sa->sa_family is not AF_INET (IPv4)");
-        return NULL;
-    }
-}
+//// Unused:
+//// get sockaddr of sender in received UDP msgs, converting to IPv4
+//void *get_in_addr(struct sockaddr *sa) {
+//    if (sa->sa_family == AF_INET) {
+//        return &(((struct sockaddr_in *) sa)->sin_addr);
+//    } else {
+//        perror("get_in_addr() detected sa->sa_family is not AF_INET (IPv4)");
+//        return NULL;
+//    }
+//}
 
 // build addrinfo linked list to choose from
 // build by getaddrinfo()
 // note: the user of this func will be responsible for freeing the linked list created
-struct addrinfo* getaddrrinfoList(int portNum)
-{
-    struct addrinfo hints, *servinfo;
+struct addrinfo *getaddrrinfoList(int portNum) {
+    struct addrinfo hints;
+    struct addrinfo *servinfo;
     int rv;
     char portNumChar[6];
     sprintf(portNumChar, "%d", portNum);    // since 65535 is max
@@ -165,14 +177,13 @@ int setupHostUDPSocket(int portNum) {
     struct addrinfo *p, *servinfo;
     int sockfd = 0;
 
-    servinfo=getaddrrinfoList(portNum);
-    if(!servinfo)
-    {
+    servinfo = getaddrrinfoList(portNum);
+    if (!servinfo) {
         fprintf(stderr, "getaddrinfo failed in setupHostUDPSocket(%d)\n", portNum);
         return -1;
     }
     // loop through all the Internet address results, make a socket, and bind to the first we can (should only be one?)
-    for (p=servinfo; p != NULL; p = p->ai_next) {
+    for (p = servinfo; p != NULL; p = p->ai_next) {
         if ((sockfd = socket(p->ai_family, p->ai_socktype,
                              p->ai_protocol)) == -1) {
             perror("listener: socket");
@@ -202,53 +213,50 @@ int setupHostUDPSocket(int portNum) {
 struct addrinfo *setupDestAddrInfo(int serverPortNum) {
     struct addrinfo *p1, *p2;
 
-    p1=getaddrrinfoList(serverPortNum);
-    if(!p1)
+    p1 = getaddrrinfoList(serverPortNum);
+    if (!p1)
         return NULL;
-    else
-    {
+    else {
         // we only need to keep one valid addrinfo block
-        p2=p1->ai_next;
-        while(p2)
-        {
+        p2 = p1->ai_next;
+        while (p2) {
             free(p1);
-            p1=p2;
-            p2=p2->ai_next;
+            p1 = p2;
+            p2 = p2->ai_next;
         }
         return p1;
     }
 }
 
 // ensure port #, open socket for UDP_in/out, and define socket_addr for UDP_out
-sockInfo *setupSockInfo(int MYPORT, int SERVERPORT)
-{
+sockInfo *setupSockInfo(int MYPORT, int SERVERPORT) {
 //    int MYPORT;      // the port THIS instance will be using
 //    int SERVERPORT;     // the port the SERVER instance will be using. I.e., port we will attempt to send TO
     int sockFD;
     int i;
     char input[5];    // because 5 digits is the max for port #
     struct addrinfo *destAddrInfo;
-    sockInfo *reObj=malloc(sizeof(sockInfo));
+    sockInfo *reObj = malloc(sizeof(sockInfo));
     // initialize to error state
-    reObj->sockFD=-1;
-    reObj->errCode=3;
-    reObj->destAddrInfo=NULL;
+    reObj->sockFD = -1;
+    reObj->errCode = 3;
+    reObj->destAddrInfo = NULL;
 
     // ########## get port # to spawn UPD socket for receiving msgs
     printf("Attempting to setup Local Socket...\n");
-    i=5;
+    i = 5;
     while (i--) {
         if (MYPORT < 1025 || MYPORT > 65535) {
             fprintf(stderr, "Invalid number as port. Try again\n");
         }// try to set up a socket and bind to this port
         else {
-            if ((sockFD = setupHostUDPSocket(MYPORT))== -1) {
+            if ((sockFD = setupHostUDPSocket(MYPORT)) == -1) {
                 fprintf(stderr, "Failed to create and bind receiving socket. Try a different Port #\n");
-                reObj->errCode=1;
-                reObj->sockFD=-1;
+                reObj->errCode = 1;
+                reObj->sockFD = -1;
             }// success!
             else {
-                reObj->sockFD=sockFD;
+                reObj->sockFD = sockFD;
                 break;
             }
         }
@@ -268,14 +276,14 @@ sockInfo *setupSockInfo(int MYPORT, int SERVERPORT)
             fprintf(stderr, "Invalid number as destination port. Try again\n");
         }// try to set up a socket with this port
         else {
-            if ((destAddrInfo= setupDestAddrInfo(SERVERPORT))==NULL) {
+            if ((destAddrInfo = setupDestAddrInfo(SERVERPORT)) == NULL) {
                 fprintf(stderr, "Failed to create destination addrinfo struct. Try a different Port #\n");
-                reObj->errCode=2;
-                reObj->destAddrInfo=NULL;
+                reObj->errCode = 2;
+                reObj->destAddrInfo = NULL;
             }// success!
             else {
-                reObj->errCode=0;
-                reObj->destAddrInfo=destAddrInfo;
+                reObj->errCode = 0;
+                reObj->destAddrInfo = destAddrInfo;
                 break;
             }
         }
@@ -287,31 +295,66 @@ sockInfo *setupSockInfo(int MYPORT, int SERVERPORT)
             SERVERPORT = 0;
     }
 
+#ifdef DEBUG
+    printf("Completed setupSockInfo(). About to return reObj with ")
     return reObj;
 }
 
 // destroy socket & the socket_addr object in a sockInfo obj
-void sock_destroy(sockInfo *mySock){
+void sock_destroy(sockInfo *mySock) {
     freeaddrinfo(mySock->destAddrInfo);
     close(mySock->sockFD);
 }
 
 // destroy a packed UDPThreadInitInfo_destroy object and everything within it
-void UDPThreadInitInfo_destroy(UDPThreadInitInfo *info){
+void UDPThreadInitInfo_destroy(UDPThreadInitInfo *info) {
     sock_destroy(info->mySock);
     free(info);
 }
 
-
-// request packages to be put onto the list
+// request for packages to be put onto the list
 void jobEnqueue(jobType type, char *str, list *aList) {
-    struct jobPckg *newJob = malloc(sizeof(jobPckg));
+    jobPckg *newJob = malloc(sizeof(jobPckg));
     strcpy(newJob->msg, str);
     newJob->type = type;
     // hold key to list and prepend
     pthread_mutex_lock(&list_mutex);
     ListPrepend(aList, newJob);
+    pthread_mutex_unlock(&list_mutex);
+}
+
+// request for the next in queue package (last in list) to be dequeued, if the jobPckg matches the select data type
+// return the pointer to the package on match
+// else return NULL
+jobPckg *jobDequeue(jobType type, list *aList) {
+    jobPckg *reObj;
+    int found_bool = 0;
+    // hold key to list
     pthread_mutex_lock(&list_mutex);
+    // check the last package
+    reObj = ListLast(aList);
+
+    // for sending
+    if (reObj->type == type) {
+        reObj = ListTrim(aList);
+        found_bool = 1;
+    }
+        // for printing, retrieving job package regardless of which type of printing
+    else if (type == PRINT && (reObj->type == PRINTWROTE || reObj->type == PRINTRCVED)) {
+        reObj = ListTrim(aList);
+        found_bool = 1;
+    }
+
+    pthread_mutex_unlock(&list_mutex);
+    if (found_bool)
+        return reObj;
+    else
+        return NULL;
+}
+
+// for use in ListFree()
+void jobPckgFree(jobPckg *aPckg) {
+    free(aPckg);
 }
 
 // -------------------------------- threads ------------------------------------------------------------
@@ -320,13 +363,13 @@ void *recordKBInput(void *t) {
     int myID = (int) t;
     char msg[MAXMSGLENGTH];
 
-    while(myID){
+    while (myID) {
         if (stdinIsNotEmpty()) {
             if (!getstdinStr(msg, MAXMSGLENGTH)) {
                 if (strlen(msg)) {
                     // create send & print jobPckg
-                    jobEnqueue(PRINT,msg,jobMgmtQueue);
-                    jobEnqueue(SEND,msg,jobMgmtQueue);
+                    jobEnqueue(PRINTWROTE, msg, jobMgmtQueue);
+                    jobEnqueue(SEND, msg, jobMgmtQueue);
                     // wake up threads printScreen & sendUDPDatagram if they are currently blocked (print_sem == -1 || send_sem==-1)
                     sem_post(&print_sem);
                     sem_post(&send_sem);
@@ -334,19 +377,108 @@ void *recordKBInput(void *t) {
             }
         }
     }
+
+
     pthread_exit(NULL);
 }
 
 void *rcvUDPDatagram(void *t) {
-    int myID =( (UDPThreadInitInfo *) t)->threadNum;
+    int myID = ((UDPThreadInitInfo *) t)->threadNum;
+    struct sockaddr_storage their_addr; // even tho in this assignment we defined the communication with IPv4,
+    // using sockaddr_storage instead of sockaddr_in allocates larger size and is generally a safer approach
+    socklen_t addr_len;
+    char msg[MAXMSGLENGTH];
+    // unpack the socket info
+    int sockFD = ((UDPThreadInitInfo *) t)->mySock->sockFD;
+    int numbytes;
+
+    // RECEIVING msg -------------------------
+    while (sockFD) {
+        addr_len = sizeof(their_addr);   // addr_len will get overwritten with recvfrom as the actual sender IP length,
+        // reset this to sockaddr_storage to accommodate both IPv4 and IPv6
+        //reset msg
+        memset(msg, 0, sizeof msg);
+        // Incoming data is buffered at the socket until read
+        // https://stackoverflow.com/a/7843683
+        if ((numbytes = recvfrom(sockFD, msg, MAXMSGLENGTH - 1, 0,
+                                 (struct sockaddr *) &their_addr, &addr_len)) == -1) {
+            perror("recvfrom");
+        } else {
+//        printf("listener: got packet from %s\n",
+//               inet_ntop(their_addr.ss_family,
+//                         get_in_addr((struct sockaddr *) &their_addr),
+//                         s, sizeof s));
+//        printf("listener: packet is %d bytes long\n", numbytes);
+            // append str terminating char to received msg
+
+            msg[numbytes] = '\0';
+            // append extracted msg to list to wait for printing:
+            jobEnqueue(PRINTRCVED, msg, jobMgmtQueue);
+            // wake up thread printScreen if they are currently blocked (print_sem == -1)
+            sem_post(&print_sem);
+        }
+    }
+
+
+    pthread_exit(NULL);
 }
 
 void *printScreen(void *t) {
     int myID = (int) t;
+    jobPckg *printJob;
+
+    while (myID) {
+        // wait for signal that there is a printing job in queue
+        sem_wait(&print_sem);
+        while (myID) {
+            if ((printJob = jobDequeue(PRINT, jobMgmtQueue)) != NULL) {
+                if (printJob->type == PRINTRCVED)
+                    printf("Him/Her: %s", printJob->msg);
+                else
+                    printf("Me: %s", printJob->msg);
+                // destroy the package after we are done with it
+                free(printJob);
+                // break out of constant checking and wait if there is no more print job
+                break;
+            }
+        }
+    }
+
+
+    pthread_exit(NULL);
 }
 
 void *sendUDPDatagram(void *t) {
-    int myID =( (UDPThreadInitInfo *) t)->threadNum;
+    int myID = ((UDPThreadInitInfo *) t)->threadNum;
+
+    jobPckg *sendJob;
+    char msg[MAXMSGLENGTH];
+    // unpack the socket info
+    int sockFD = ((UDPThreadInitInfo *) t)->mySock->sockFD;
+    struct addrinfo *destAddrInfo = ((UDPThreadInitInfo *) t)->mySock->destAddrInfo;
+    int numbytes;
+
+    while (myID) {
+        // wait for signal that there is a printing job in queue
+        sem_wait(&send_sem);
+        while (myID) {
+            if ((sendJob = jobDequeue(SEND, jobMgmtQueue)) != NULL) {
+                if ((numbytes = sendto(sockFD, msg, strlen(msg), 0,
+                                       destAddrInfo->ai_addr, destAddrInfo->ai_addrlen)) == -1) {
+                    fprintf(stderr,
+                            "Error: sendUDPDatagram(). Only %d bytes were sent, while msg is %d bytes long: %s\n",
+                            numbytes, strlen(msg), strerror(errno));
+                }
+                // destroy the package after we are done with it
+                free(sendJob);
+                // break out of constant checking and wait if there is no more print job
+                break;
+            }
+        }
+    }
+
+
+    pthread_exit(NULL);
 }
 
 int main(int argc, char *argv[]) {
@@ -358,24 +490,23 @@ int main(int argc, char *argv[]) {
     int rv; //return value
 
 
-    mySockPacked=malloc(sizeof(UDPThreadInitInfo));
+    mySockPacked = malloc(sizeof(UDPThreadInitInfo));
 
     pthread_attr_t attr;
     pthread_t threads[NUMTHREADS];
 
     // ensure port #, open socket for UDP_in/out, and define socket_addr for UDP_out
     // not specified: pass in 0 as false value and valid port # will be prompted for user input
-    if(argc>2)
+    if (argc > 2)
         mySock = setupSockInfo(strtoi(argv[1]), strtoi(argv[2]));
-    else if(argc>1)
-        mySock=setupSockInfo(strtoi(argv[1]),0);
+    else if (argc > 1)
+        mySock = setupSockInfo(strtoi(argv[1]), 0);
     else
-        mySock=setupSockInfo(0,0);
+        mySock = setupSockInfo(0, 0);
 
     // terminate program if socket was unable to be set up successfully
-    if(mySock->errCode)
-    {
-        fprintf(stderr,"Failed to create socket or socket info for server! Goodbye : %d\n",mySock->errCode);
+    if (mySock->errCode) {
+        fprintf(stderr, "Failed to create socket or socket info for server! Goodbye : %d\n", mySock->errCode);
         return 1;
     }
 
@@ -390,11 +521,11 @@ int main(int argc, char *argv[]) {
         perror("sem_init for send_sem failed\n");
 
     if (rv = pthread_mutex_init(&list_mutex, NULL) != 0)
-        fprintf(stderr,"mutex_init for list_mutex failed: %s\n", strerror(rv));
+        fprintf(stderr, "mutex_init for list_mutex failed: %s\n", strerror(rv));
 
     // condition initialization
     if (rv = pthread_cond_init(&terminateSIG, NULL) != 0)
-        fprintf(stderr,"cond_init for terminateSIG failed: %s\n", strerror(rv));
+        fprintf(stderr, "cond_init for terminateSIG failed: %s\n", strerror(rv));
 
     // for portability explicitly create threads in a joinable state
     pthread_attr_init(&attr);
@@ -402,10 +533,10 @@ int main(int argc, char *argv[]) {
     pthread_create(&threads[0], &attr, recordKBInput, (void *) t1);
     pthread_create(&threads[1], &attr, printScreen, (void *) t2);
     // pack mySock and pass to the UDP threads
-    mySockPacked->mySock=mySock;
-    mySockPacked->threadNum=t3;
+    mySockPacked->mySock = mySock;
+    mySockPacked->threadNum = t3;
     pthread_create(&threads[2], &attr, rcvUDPDatagram, (void *) &mySockPacked);
-    mySockPacked->threadNum=t4;
+    mySockPacked->threadNum = t4;
     pthread_create(&threads[3], &attr, sendUDPDatagram, (void *) &mySockPacked);
 
 
@@ -420,14 +551,17 @@ int main(int argc, char *argv[]) {
 
     // cleanup
     UDPThreadInitInfo_destroy(mySockPacked);
+    ListFree(jobMgmtQueue, jobPckgFree);
+
     if (rv = pthread_mutex_destroy(&list_mutex) != 0)
-        fprintf(stderr,"sem_destroy for print_sem failed: %s\n", strerror(rv));
+        fprintf(stderr, "sem_destroy for print_sem failed: %s\n", strerror(rv));
     if (rv = pthread_cond_destroy(&terminateSIG) != 0)
-        fprintf(stderr,"cond_destroy for terminateSIG failed: %s\n", strerror(rv));
+        fprintf(stderr, "cond_destroy for terminateSIG failed: %s\n", strerror(rv));
     if (sem_destroy(&print_sem) == -1)
         perror("sem_destroy for print_sem failed\n");
     if (sem_destroy(&send_sem) == -1)
         perror("sem_destroy for send_sem failed\n");
+    void ListFree(list *aList, void (*itemFree)());
 
 
     return 0;

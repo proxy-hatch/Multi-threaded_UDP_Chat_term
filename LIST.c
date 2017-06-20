@@ -350,7 +350,7 @@ int ListPrepend(list *aList, void *anItem) {
     if ((aList->head && aList->head->belong != aList) || (aList->tail && aList->tail->belong != aList) ||
         (aList->curr >= nodePool && aList->curr < nodePool + MAXNODECOUNT &&
          aList->curr->belong != aList))
-        return NULL;
+        return 0;
 
 
     // Invalid aList->curr is allowed. We do not need it to know where to insert new node
