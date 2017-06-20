@@ -36,7 +36,6 @@
 #include <sys/types.h>
 
 
-
 #include "LIST.h"
 
 #define NUMTHREADS 4
@@ -59,14 +58,15 @@ typedef struct jobPckg {
 // used for opening socket for UDP_in/out, and defining socket_addr for UDP_out
 typedef struct sockInfo {
     int sockFD;     // local socket #. -1: invalid
-    struct addrinfo *destAddrInfo;
+    struct sockaddr_in  *destSockAddr;
+    int destAddrLen;
     int errCode;    // 0: no problem; 1: Failed to create and bind receiving socket; 2: Failed to create destination addrinfo struct; 3: unknown
 } sockInfo;
 // used for sendUDP & rcvUDP upon thread startup
 // contains socket info and thread #
 typedef struct UDPThreadInitInfo {
     int threadNum;     // local socket #. invalid: -1
-    sockInfo *mySock;
+    sockInfo *mySockPtr;
 } UDPThreadInitInfo;
 
 // global variables
@@ -74,7 +74,7 @@ typedef struct UDPThreadInitInfo {
 list *jobMgmtQueue;
 
 // socket file descriptor and info obj. To be passed to the two UDP-related threads
-sockInfo *mySock;
+sockInfo *mySockPtr;
 UDPThreadInitInfo *mySockPacked;
 
 // these two semaphores are used to notify the threads printScreen() & endUDPDatagram() to wake up
@@ -240,7 +240,8 @@ sockInfo *setupSockInfo(int MYPORT, int SERVERPORT) {
     // initialize to error state
     reObj->sockFD = -1;
     reObj->errCode = 3;
-    reObj->destAddrInfo = NULL;
+    reObj->destSockAddr = NULL;
+    reObj->destAddrLen=0;
 
     // ########## get port # to spawn UPD socket for receiving msgs
     printf("Attempting to setup Local Socket...\n");
@@ -279,11 +280,21 @@ sockInfo *setupSockInfo(int MYPORT, int SERVERPORT) {
             if ((destAddrInfo = setupDestAddrInfo(SERVERPORT)) == NULL) {
                 fprintf(stderr, "Failed to create destination addrinfo struct. Try a different Port #\n");
                 reObj->errCode = 2;
-                reObj->destAddrInfo = NULL;
+                reObj->destSockAddr = NULL;
             }// success!
             else {
-                reObj->errCode = 0;
-                reObj->destAddrInfo = destAddrInfo;
+                // Supporting IPv4 only. Shouldn't be a problem as its what we specified in 'hint' parameter
+                if(destAddrInfo->ai_family==AF_INET)
+                {
+                    reObj->errCode = 0;
+                    reObj->destSockAddr =destAddrInfo->ai_addr;
+                    reObj->destAddrLen=destAddrInfo->ai_addrlen;
+                }
+                else{
+                    reObj->errCode = 2;
+                    reObj->destSockAddr = NULL;
+                    reObj->destAddrLen=destAddrInfo->ai_addrlen;
+                }
                 break;
             }
         }
@@ -296,19 +307,20 @@ sockInfo *setupSockInfo(int MYPORT, int SERVERPORT) {
     }
 
 #ifdef DEBUG
-    printf("Completed setupSockInfo(). About to return reObj with ")
+    printf("Completed setupSockInfo(). About to return reObj \n");
+#endif  //DEBUG
     return reObj;
 }
 
 // destroy socket & the socket_addr object in a sockInfo obj
 void sock_destroy(sockInfo *mySock) {
-    freeaddrinfo(mySock->destAddrInfo);
+    freeaddrinfo(mySock->destSockAddr);
     close(mySock->sockFD);
 }
 
 // destroy a packed UDPThreadInitInfo_destroy object and everything within it
 void UDPThreadInitInfo_destroy(UDPThreadInitInfo *info) {
-    sock_destroy(info->mySock);
+    sock_destroy(info->mySockPtr);
     free(info);
 }
 
@@ -389,7 +401,7 @@ void *rcvUDPDatagram(void *t) {
     socklen_t addr_len;
     char msg[MAXMSGLENGTH];
     // unpack the socket info
-    int sockFD = ((UDPThreadInitInfo *) t)->mySock->sockFD;
+    int sockFD = ((UDPThreadInitInfo *) t)->mySockPtr->sockFD;
     int numbytes;
 
     // RECEIVING msg -------------------------
@@ -454,8 +466,9 @@ void *sendUDPDatagram(void *t) {
     jobPckg *sendJob;
     char msg[MAXMSGLENGTH];
     // unpack the socket info
-    int sockFD = ((UDPThreadInitInfo *) t)->mySock->sockFD;
-    struct addrinfo *destAddrInfo = ((UDPThreadInitInfo *) t)->mySock->destAddrInfo;
+    int sockFD = ((UDPThreadInitInfo *) t)->mySockPtr->sockFD;
+    struct sockaddr_in *destSockAddr = ((UDPThreadInitInfo *) t)->mySockPtr->destSockAddr;
+    int addrLength=((UDPThreadInitInfo *) t)->mySockPtr->destAddrLen;
     int numbytes;
 
     while (myID) {
@@ -464,7 +477,7 @@ void *sendUDPDatagram(void *t) {
         while (myID) {
             if ((sendJob = jobDequeue(SEND, jobMgmtQueue)) != NULL) {
                 if ((numbytes = sendto(sockFD, msg, strlen(msg), 0,
-                                       destAddrInfo->ai_addr, destAddrInfo->ai_addrlen)) == -1) {
+                                       (struct sockaddr *)destSockAddr, addrLength)) == -1) {
                     fprintf(stderr,
                             "Error: sendUDPDatagram(). Only %d bytes were sent, while msg is %d bytes long: %s\n",
                             numbytes, strlen(msg), strerror(errno));
@@ -498,15 +511,15 @@ int main(int argc, char *argv[]) {
     // ensure port #, open socket for UDP_in/out, and define socket_addr for UDP_out
     // not specified: pass in 0 as false value and valid port # will be prompted for user input
     if (argc > 2)
-        mySock = setupSockInfo(strtoi(argv[1]), strtoi(argv[2]));
+        mySockPtr = setupSockInfo(strtoi(argv[1]), strtoi(argv[2]));
     else if (argc > 1)
-        mySock = setupSockInfo(strtoi(argv[1]), 0);
+        mySockPtr = setupSockInfo(strtoi(argv[1]), 0);
     else
-        mySock = setupSockInfo(0, 0);
+        mySockPtr = setupSockInfo(0, 0);
 
     // terminate program if socket was unable to be set up successfully
-    if (mySock->errCode) {
-        fprintf(stderr, "Failed to create socket or socket info for server! Goodbye : %d\n", mySock->errCode);
+    if (mySockPtr->errCode) {
+        fprintf(stderr, "Failed to create socket or socket info for server! Goodbye : %d\n", mySockPtr->errCode);
         return 1;
     }
 
@@ -532,8 +545,8 @@ int main(int argc, char *argv[]) {
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
     pthread_create(&threads[0], &attr, recordKBInput, (void *) t1);
     pthread_create(&threads[1], &attr, printScreen, (void *) t2);
-    // pack mySock and pass to the UDP threads
-    mySockPacked->mySock = mySock;
+    // pack mySockPtr and pass to the UDP threads
+    mySockPacked->mySockPtr = mySockPtr;
     mySockPacked->threadNum = t3;
     pthread_create(&threads[2], &attr, rcvUDPDatagram, (void *) &mySockPacked);
     mySockPacked->threadNum = t4;
