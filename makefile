@@ -1,10 +1,10 @@
 CC=gcc
 CFLAGS=-w -std=c99
-PROG=run
+PROG=s-talk
 OBJS= LIST.o main.o
 PTHREADFLAGS=-pthread
 
-run: $(OBJS)
+s-talk: $(OBJS)
 	$(CC) $(CFLAGS) -o $(PROG) $(PTHREADFLAGS) $(OBJS)
 
 LIST.o: LIST.c LIST.h

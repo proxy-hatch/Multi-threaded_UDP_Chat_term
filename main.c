@@ -150,10 +150,10 @@ int stdinIsNotEmpty() {
 int getstdinStr(char *arr, int size) {
     char *p;
     //reset msg
-    memset(arr, 0, sizeof(p) * size);
+    memset(arr, 0, sizeof(p));
 
     // fgets return NULL on failure
-    if (fgets(arr, sizeof(p) * size, stdin)) {
+    if (fgets(arr, size, stdin)) {
         return 0;
     } else
         return -1;
@@ -302,13 +302,13 @@ int isAllSpace(char *head, int strLen) {
 // -------------------------------- threads ------------------------------------------------------------
 // it is essential to have threads return void*: https://stackoverflow.com/a/10457390
 void *recordKBInput(void *t) {
-    char msg[MAXMSGLENGTH];
+    char msg[MAXMSGLENGTH+1];
     int numbytes;
 
     while (!terminateSIG_bool) {
         if (stdinIsNotEmpty()) {
             if (!getstdinStr(msg, MAXMSGLENGTH)) {
-                numbytes = strlen(msg);
+                numbytes = (int) strlen(msg);
                 if (numbytes) {
                     // single "!" (plus whatever whitespace) char is sent -> terminate
                     if (msg[0] == 33 &&
@@ -336,7 +336,21 @@ void *recordKBInput(void *t) {
 }
 
 // thread handles scenario of when the remote host sends "!" to indicate terminate
+/*
+ * rcvUDPDatagram() is special because it is impossible to wake thread from rcvfrom() and terminate,
+ * in the case of when terminateSIG is sent from recordKBInput() thread.
+ * As a result, we will call pthread_cancel(thread[3]) after all other threads are terminated.
+ * A better approach might be having recordKBInput() handle the cancelling,
+ * but that would require passing in the threadID of rcvUDPDatagram() to recordKBInput(), increasing code complexity.
+ */
 void *rcvUDPDatagram(void *t) {
+    // setup cancellation
+    int rv;
+    if((rv=pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,NULL))!=0)
+        fprintf(stderr,"Error in pthread_setcancelstate() for rcvUDPDatagram(): %s\n",strerror(rv));
+    if((rv=pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS,NULL))!=0)
+        fprintf(stderr,"Error in pthread_setcanceltype() for rcvUDPDatagram(): %s\n",strerror(rv));
+
     struct sockaddr_storage their_addr; // even tho in this assignment we defined the communication with IPv4,
     // using sockaddr_storage instead of sockaddr_in allocates larger size and is generally a safer approach
     socklen_t addr_len;
@@ -371,19 +385,21 @@ void *rcvUDPDatagram(void *t) {
             printf("Packet is %d bytes long\n", numbytes);
             printf("Packet contains \"%s\"\n", msg);
 #endif
-            // single "!" char is sent -> terminate
+            // single "!" char is received -> terminate
             if (msg[0] == 33 &&isAllSpace(msg+1,MAXMSGLENGTH-1)) {    //ASCII '!'=33, designated termination signal
                 terminateSIG_bool = 1;
             } else {
                 // append extracted msg to list to wait for printing:
                 pthread_mutex_lock(&printList_mutex);
                 jobEnqueue(RCVED, msg, printJobMgmtQueue);
-                pthread_mutex_lock(&printList_mutex);
+                pthread_mutex_unlock(&printList_mutex);
             }
-            // wake up thread printScreen if they are currently blocked (print_sem == -1)
+            // wake up thread printScreen if it is currently blocked (print_sem == -1)
             sem_post(&print_sem);
         }
     }
+    // also wake up sendUDPDatagram thread, in case its currently blocked
+    sem_post(&send_sem);
     pthread_exit(NULL);
 }
 
@@ -398,9 +414,11 @@ void *printScreen(void *t) {
         pthread_mutex_lock(&printList_mutex);
         printJob = jobDequeue(printJobMgmtQueue);
         pthread_mutex_unlock(&printList_mutex);
-
+        // upon receiving "!", recordKBInput() thread only unblocks printScreen() thread, no jobPckg was added
         if (printJob != NULL) {
-            if (printJob->type == RCVED)
+            if(isAllSpace(printJob->msg,MAXMSGLENGTH)){}
+                // ignore job
+            else if (printJob->type == RCVED)
                 printf("He/She: %s", printJob->msg);
             else
                 printf("Me: %s", printJob->msg);
@@ -408,6 +426,7 @@ void *printScreen(void *t) {
             free(printJob);
         }
     }
+    printf("Thanks for using this s-talk app designed by Shawn. Have a nice day!\n");
     pthread_exit(NULL);
 }
 
@@ -425,7 +444,7 @@ void *sendUDPDatagram(void *t) {
     // send thread is the only thread that cannot terminate upon JUST receiving terminating signal
     // It carries the responsibility of sending this signal to the remote before shutting down
     // thus we set it to break only when the sending queue is empty. I.e., all sending jobs completed
-    while (!(terminateSIG_bool && ListCount(sendJobMgmtQueue))) {
+    while (!terminateSIG_bool ) {
         // wait for signal that there is a printing job in queue
         sem_wait(&send_sem);
 
@@ -433,7 +452,7 @@ void *sendUDPDatagram(void *t) {
         sendJob = jobDequeue(sendJobMgmtQueue);
         pthread_mutex_unlock(&sendList_mutex);
 
-        if (sendJob != NULL) {
+        if (sendJob != NULL && !isAllSpace(sendJob->msg,MAXMSGLENGTH)) {
             if ((numbytes = sendto(sockFD, sendJob->msg, strlen(sendJob->msg), 0,
                                    destAddrInfo->ai_addr, destAddrInfo->ai_addrlen)) == -1) {
                 fprintf(stderr,
@@ -475,14 +494,20 @@ int main(int argc, char *argv[]) {
     if (argc > 2) {
         // defined as return 0 upon success
         badPort_bool = convertCharPortsToInt(argv[1], argv[3], &MYPORT, &REMOTEPORT);
+        strcpy(remoteAddr,argv[2]);
     }
 
     // ensure port #, open socket for UDP_in/out, and define socket_addr for UDP_out
     // not specified: pass in 0 as false value and valid port # will be prompted for user input
     if (argc < 3 || badPort_bool) {
         i = 5;
+        badPort_bool=1;
         while (i-- > 0 && badPort_bool) {
-            printf("Please re-enter the program parameters as such: [my port number] [remote machine name/address] [remote port number]\nValid port number range: 1025-65535");
+            printf("Please re-enter the program parameters as such: [my port number] [remote machine name/address] [remote port number]\nValid port number range: 1025-65535\n");
+            // clear char arrs
+            memset(MYPORTchar, 0, sizeof MYPORTchar);
+            memset(REMOTEPORTchar, 0, sizeof REMOTEPORTchar);
+            memset(remoteAddr, 0, sizeof remoteAddr);
             // returns the # of variables assigned
             if (scanf("%s%s%s", MYPORTchar, remoteAddr, REMOTEPORTchar) == 3)
                 badPort_bool = convertCharPortsToInt(MYPORTchar, REMOTEPORTchar, &MYPORT, &REMOTEPORT);
@@ -505,7 +530,7 @@ int main(int argc, char *argv[]) {
     printf("Setting up Local Socket...\n");
 #endif
     if ((sockFD = setupHostUDPSocket(MYPORT)) == -1) {
-        fprintf(stderr, "Failed to create and bind receiving socket. Maybe try a different Port # ? Byebye\n");
+        fprintf(stderr, "Failed to create and bind receiving socket. Maybe try a different Port # ?");
         return 2;
     }// success!
     else {
@@ -521,8 +546,8 @@ int main(int argc, char *argv[]) {
 #ifdef DEBUG
     printf("Setting up Destination (Remote) Socket info...\n");
 #endif
-    if ((sockInfoPassToThread->destAddrInfo = setupDestAddrInfo(REMOTEPORT, argv[2])) == NULL) {
-        fprintf(stderr, "Failed to create destination addrinfo struct. Try a different Port #\n");
+    if ((sockInfoPassToThread->destAddrInfo = setupDestAddrInfo(REMOTEPORT, remoteAddr)) == NULL) {
+        fprintf(stderr, "Failed to create destination addrinfo struct. Try a different Port # next time\nBye!\n");
         return 3;
     }// else: success!
 #ifdef DEBUG
@@ -545,17 +570,24 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "mutex_init for sendList_mutex failed: %s\n", strerror(rv));
 
     // for portability explicitly create threads in a joinable state
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+    if(pthread_attr_init(&attr)!=0)
+        perror("Error in pthread_attr_init()");
+    if(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE)!=0)
+        perror("Error in pthread_attr_setdetachstate()");
     pthread_create(&threads[0], &attr, recordKBInput, NULL);
     pthread_create(&threads[1], &attr, printScreen, NULL);
-    pthread_create(&threads[2], &attr, rcvUDPDatagram, (void *) sockInfoPassToThread);
-    pthread_create(&threads[3], &attr, sendUDPDatagram, (void *) sockInfoPassToThread);
+    pthread_create(&threads[2], &attr, sendUDPDatagram, (void *) sockInfoPassToThread);
 
+    // we treat rcvUDPDatagram() specially. See thread header for details
+    pthread_create(&threads[3], NULL, rcvUDPDatagram, (void *) sockInfoPassToThread);
 //    pthread_exit(NULL);   //main() will block upon finishing and be kept alive to support the threads it created until they are done
     // use pthread_join() instead, as we need to cleanup once the other threads finishes
-    for (i = 0; i < NUMTHREADS; i++)
+    for (i = 0; i < NUMTHREADS-1; i++)
         pthread_join(threads[i], NULL);
+
+    // handle the terminating of rcvUDPDatagram() thread
+    if((rv=pthread_cancel(threads[3]))!=0)
+        fprintf(stderr,"pthread_cancel(rcvUDPDatagram) returned error: %s\n",strerror(rv));
 
     // cleanup
     sockInfo_destroy(sockInfoPassToThread);
