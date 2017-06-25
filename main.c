@@ -15,7 +15,9 @@
 // Adding this is one liner was the solution as explained here: https://stackoverflow.com/a/37545256
 #define _POSIX_C_SOURCE 200112L
 
-#define DEBUG
+//// DEBUG macro is used to turn on various debugging features
+//// Disable at the release version
+//#define DEBUG
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -426,7 +428,7 @@ void *printScreen(void *t) {
             free(printJob);
         }
     }
-    printf("Thanks for using this s-talk app designed by Shawn. Have a nice day!\n");
+    printf("\n\nThanks for using this s-talk app designed by Shawn. Have a nice day!\n");
     pthread_exit(NULL);
 }
 
