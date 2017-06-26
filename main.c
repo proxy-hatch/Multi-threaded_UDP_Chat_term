@@ -2,7 +2,7 @@
 ////
 ////
 //// Created on: Jun 15, 2017
-//// Last Modified: Jun ??, 2017
+//// Last Modified: Jun 25, 2017
 //// Author: Yu Xuan (Shawn) Wang
 //// Email: yxwang@sfu.ca
 //// Student #: 301227972
@@ -11,6 +11,7 @@
 // http://beej.us/guide/bgnet/examples/listener.c
 
 // this program ALWAYS define the sender as client and the receiver as server
+
 // addrinfo & AI_PASSIVE was not able to be recognized despite '#include <netdb.h>' when compiling with '-std=CXX' flag
 // Adding this is one liner was the solution as explained here: https://stackoverflow.com/a/37545256
 #define _POSIX_C_SOURCE 200112L
@@ -319,12 +320,45 @@ void *recordKBInput(void *t) {
                     } else {
                         // create send & print jobPckg
                         pthread_mutex_lock(&printList_mutex);
+#ifdef DEBUG
+                        char *debuggingMsg;
+                        if( printJobMgmtQueue->curr)
+                            debuggingMsg=((jobPckg *) printJobMgmtQueue->curr->data)->msg;
+                        else
+                            debuggingMsg=NULL;
+                        printf("jobEnqueue called on printJobMgmtQueue in recordKBInput:\n");
+                        printf("Before: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) printJobMgmtQueue->head, (void *) printJobMgmtQueue->tail,(void *) printJobMgmtQueue->curr,debuggingMsg);
+#endif
                         jobEnqueue(WROTE, msg, printJobMgmtQueue);
+#ifdef DEBUG
+                        if( printJobMgmtQueue->curr)
+                            debuggingMsg=((jobPckg *) printJobMgmtQueue->curr->data)->msg;
+                        else
+                            debuggingMsg=NULL;
+                        printf("After: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) printJobMgmtQueue->head, (void *) printJobMgmtQueue->tail,(void *) printJobMgmtQueue->curr,debuggingMsg);
+#endif
                         pthread_mutex_unlock(&printList_mutex);
                     }
                     // even if msg=="!", we would like to send the termination signal to the remote host anyways
                     pthread_mutex_lock(&sendList_mutex);
+#ifdef DEBUG
+                    char *debuggingMsg;
+                    if( sendJobMgmtQueue->curr)
+                        debuggingMsg=((jobPckg *) sendJobMgmtQueue->curr->data)->msg;
+                    else
+                        debuggingMsg=NULL;
+                    printf("jobEnqueue called on sendJobMgmtQueue in recordKBInput:\n");
+                    printf("Before: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) sendJobMgmtQueue->head, (void *) sendJobMgmtQueue->tail,(void *) sendJobMgmtQueue->curr,debuggingMsg);
+#endif
                     jobEnqueue(DEFAULT, msg, sendJobMgmtQueue);
+#ifdef DEBUG
+                    if( sendJobMgmtQueue->curr)
+                        debuggingMsg=((jobPckg *) sendJobMgmtQueue->curr->data)->msg;
+                    else
+                        debuggingMsg=NULL;
+                    printf("After: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) sendJobMgmtQueue->head, (void *) sendJobMgmtQueue->tail,(void *) sendJobMgmtQueue->curr,debuggingMsg);
+#endif
+
                     pthread_mutex_unlock(&sendList_mutex);
 
                     // wake up threads printScreen & sendUDPDatagram if they are currently blocked (print_sem == -1 || send_sem==-1)
@@ -393,7 +427,23 @@ void *rcvUDPDatagram(void *t) {
             } else {
                 // append extracted msg to list to wait for printing:
                 pthread_mutex_lock(&printList_mutex);
+#ifdef DEBUG
+                char *debuggingMsg;
+                if( printJobMgmtQueue->curr)
+                    debuggingMsg=((jobPckg *) printJobMgmtQueue->curr->data)->msg;
+                else
+                    debuggingMsg=NULL;
+                printf("jobEnqueue called on printJobMgmtQueue in rcvUDPDatagram:\n");
+                printf("Before: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) printJobMgmtQueue->head, (void *) printJobMgmtQueue->tail,(void *) printJobMgmtQueue->curr,debuggingMsg);
+#endif
                 jobEnqueue(RCVED, msg, printJobMgmtQueue);
+#ifdef DEBUG
+                if( printJobMgmtQueue->curr)
+                    debuggingMsg=((jobPckg *) printJobMgmtQueue->curr->data)->msg;
+                else
+                    debuggingMsg=NULL;
+                printf("After: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) printJobMgmtQueue->head, (void *) printJobMgmtQueue->tail,(void *) printJobMgmtQueue->curr,debuggingMsg);
+#endif
                 pthread_mutex_unlock(&printList_mutex);
             }
             // wake up thread printScreen if it is currently blocked (print_sem == -1)
@@ -414,7 +464,23 @@ void *printScreen(void *t) {
         sem_wait(&print_sem);
 
         pthread_mutex_lock(&printList_mutex);
+#ifdef DEBUG
+        char *debuggingMsg;
+        if( printJobMgmtQueue->curr)
+            debuggingMsg=((jobPckg *) printJobMgmtQueue->curr->data)->msg;
+        else
+            debuggingMsg=NULL;
+        printf("jobDequeue called on printJobMgmtQueue in printScreen:\n");
+        printf("Before: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) printJobMgmtQueue->head, (void *) printJobMgmtQueue->tail,(void *) printJobMgmtQueue->curr,debuggingMsg);
+#endif
         printJob = jobDequeue(printJobMgmtQueue);
+#ifdef DEBUG
+        if( printJobMgmtQueue->curr)
+            debuggingMsg=((jobPckg *) printJobMgmtQueue->curr->data)->msg;
+        else
+            debuggingMsg=NULL;
+        printf("After: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) printJobMgmtQueue->head, (void *) printJobMgmtQueue->tail,(void *) printJobMgmtQueue->curr,debuggingMsg);
+#endif
         pthread_mutex_unlock(&printList_mutex);
         // upon receiving "!", recordKBInput() thread only unblocks printScreen() thread, no jobPckg was added
         if (printJob != NULL) {
@@ -451,7 +517,23 @@ void *sendUDPDatagram(void *t) {
         sem_wait(&send_sem);
 
         pthread_mutex_lock(&sendList_mutex);
+#ifdef DEBUG
+        char *debuggingMsg;
+        if( sendJobMgmtQueue->curr)
+            debuggingMsg=((jobPckg *) sendJobMgmtQueue->curr->data)->msg;
+        else
+            debuggingMsg=NULL;
+        printf("jobDequeue called on sendJobMgmtQueue in sendUDPDatagram:\n");
+        printf("Before: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) sendJobMgmtQueue->head, (void *) sendJobMgmtQueue->tail,(void *) sendJobMgmtQueue->curr,debuggingMsg);
+#endif
         sendJob = jobDequeue(sendJobMgmtQueue);
+#ifdef DEBUG
+        if( sendJobMgmtQueue->curr)
+            debuggingMsg=((jobPckg *) sendJobMgmtQueue->curr->data)->msg;
+        else
+            debuggingMsg=NULL;
+        printf("After: head: %p; tail: %p; curr: %p; curr->msg:%s\n",(void *) sendJobMgmtQueue->head, (void *) sendJobMgmtQueue->tail,(void *) sendJobMgmtQueue->curr,debuggingMsg);
+#endif
         pthread_mutex_unlock(&sendList_mutex);
 
         if (sendJob != NULL && !isAllSpace(sendJob->msg,MAXMSGLENGTH)) {
@@ -532,7 +614,7 @@ int main(int argc, char *argv[]) {
     printf("Setting up Local Socket...\n");
 #endif
     if ((sockFD = setupHostUDPSocket(MYPORT)) == -1) {
-        fprintf(stderr, "Failed to create and bind receiving socket. Maybe try a different Port # ?");
+        fprintf(stderr, "Failed to create and bind receiving socket. Maybe try a different Port # ?\nBye!\n");
         return 2;
     }// success!
     else {
@@ -588,7 +670,7 @@ int main(int argc, char *argv[]) {
         pthread_join(threads[i], NULL);
 
     // handle the terminating of rcvUDPDatagram() thread
-    if((rv=pthread_cancel(threads[3]))!=0)
+    if((rv=pthread_cancel(threads[3]))!=0 && rv!=3)     // strerror(3)=="no such process". This is okay as the thread has died already
         fprintf(stderr,"pthread_cancel(rcvUDPDatagram) returned error: %s\n",strerror(rv));
 
     // cleanup

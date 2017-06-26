@@ -1,7 +1,8 @@
 CC=gcc
 CFLAGS=-w -std=c99
 PROG=s-talk
-OBJS= LIST.o main.o
+OBJS= main.o LIST.o
+# pthread vs lpthread: https://stackoverflow.com/a/23251828
 PTHREADFLAGS=-pthread
 
 s-talk: $(OBJS)
@@ -12,6 +13,7 @@ LIST.o: LIST.c LIST.h
 
 main.o: main.c
 	$(CC) $(CFLAGS) -c main.c
+
 
 clean:
 	rm *.o

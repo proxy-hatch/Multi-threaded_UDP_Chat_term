@@ -399,10 +399,14 @@ void *ListRemove(list *aList) {
         return NULL;
 
     // additional error checks: Empty list || curr is invalid
-    // DONT KNOW WHERE TO DELETE!
-    if (!aList->head || !aList->curr || !aList->curr->boolActive || aList->curr < nodePool ||
-        aList->curr >= nodePool + numNodes)
+    // Nothing to do
+    if (!aList->head )
         return NULL;
+    // DONT KNOW WHERE TO DELETE! Set the tail to be deleted (for the convenience of as02)
+    if(!aList->curr || !aList->curr->boolActive || aList->curr < nodePool ||
+          aList->curr >= nodePool + numNodes)
+        aList->curr=aList->tail;
+
 
     int boolDeletingAtTail = aList->curr == aList->tail ? 1 : 0;
     int boolDeletingAtHead = aList->curr == aList->head ? 1 : 0;
@@ -417,7 +421,6 @@ void *ListRemove(list *aList) {
         aList->curr->prev->next = NULL;
         aList->tail = aList->curr->prev;
     } else if (boolDeletingAtHead) {
-        aList->curr->next->prev = aList->head;
         aList->head = aList->head->next;
         aList->head->prev = NULL;
     } // deleting in the middle

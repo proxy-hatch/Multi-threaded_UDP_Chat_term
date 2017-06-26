@@ -1,6 +1,8 @@
 //
 // Created by shawn on 23/05/17.
 //
+// UNRESOLVED BUG: curr ptr in List structures will get corrupted from time to time
+
 #pragma once
 #include <stdlib.h>    // NULL macro
 
@@ -14,7 +16,7 @@
 
 #ifndef DEBUG
 #define MAXLISTCOUNT 10
-#define MAXNODECOUNT 100
+#define MAXNODECOUNT 1000
 #endif
 
 
